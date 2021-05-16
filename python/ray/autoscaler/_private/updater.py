@@ -24,7 +24,7 @@ from ray.autoscaler._private.event_system import (CreateClusterEvent,
 logger = logging.getLogger(__name__)
 
 NUM_SETUP_STEPS = 7
-READY_CHECK_INTERVAL = 5
+READY_CHECK_INTERVAL = 1
 
 
 class NodeUpdater:
