@@ -22,7 +22,7 @@ def wait_for_compute_zone_operation(compute, project_name, operation, zone):
                     operation["name"]))
 
     for _ in range(MAX_POLLS):
-        result = compute.zoneOperations().get(
+        result = compute.zoneOperations().wait(
             project=project_name, operation=operation["name"],
             zone=zone).execute()
         if "error" in result:
