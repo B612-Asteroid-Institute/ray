@@ -280,20 +280,27 @@ class GCPNodeProvider(NodeProvider):
                                                 operation, availability_zone)
 
     def terminate_node(self, node_id):
+        return self.terminate_nodes([node_id])
+
+    def terminate_nodes(self, node_ids):
+        logger.info(f"terminate_nodes: {node_ids}")
         with self.lock:
             project_id = self.provider_config["project_id"]
             availability_zone = self.provider_config["availability_zone"]
 
-            operation = self.compute.instances().delete(
-                project=project_id,
-                zone=availability_zone,
-                instance=node_id,
-            ).execute()
+            # Initiate terminations
+            operations = [
+                self.compute.instances().delete(
+                    project=project_id,
+                    zone=availability_zone,
+                    instance=node_id,
+                ).execute() for node_id in node_ids
+            ]
 
-            result = wait_for_compute_zone_operation(
-                self.compute, project_id, operation, availability_zone)
-
-            return result
+            # Wait for terminations to complete
+            for operation in operations:
+                wait_for_compute_zone_operation(self.compute, project_id,
+                                                operation, availability_zone)
 
     def _get_node(self, node_id):
         self.non_terminated_nodes({})  # Side effect: updates cache
