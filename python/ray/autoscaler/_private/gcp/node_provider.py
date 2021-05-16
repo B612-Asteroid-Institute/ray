@@ -1,7 +1,8 @@
 from uuid import uuid4
-from threading import RLock
+from threading import RLock, Event
 import time
 import logging
+import threading
 
 from ray.autoscaler.node_provider import NodeProvider
 from ray.autoscaler.tags import TAG_RAY_CLUSTER_NAME, TAG_RAY_NODE_NAME
@@ -50,6 +51,86 @@ class GCPNodeProvider(NodeProvider):
         # excessive DescribeInstances requests.
         self.cached_nodes = {}
 
+        # Update labels on a background thread (speedup)
+        self.label_lock = RLock()
+        self.cur_labels = {}
+        self.pending_commit = {}
+        threading.Thread(name='_label_updater_thread', target=self._label_committer_thread, args=(provider_config,)).start()
+
+    def _label_committer_thread(self, provider_config):
+        #
+        # Ray stores the information about node state into GCP instance
+        # labels.  Setting these labels takes time (2-3 seconds, each), and
+        # if done synchronously this significantly slows down setup of large
+        # clusters (~10+ of minutes instead of a ~minute).  We therefore
+        # locally accumulate the changes made to labels in set_node_tags(),
+        # and asynchronously update the state on GCP in this background
+        # thread.
+        #
+
+        # construct a new API object for this thread, as these are not thread safe
+        _, _, compute = construct_clients_from_provider_config(provider_config)
+
+        project_id = self.provider_config["project_id"]
+        availability_zone = self.provider_config["availability_zone"]
+
+        # run until the program exits _and_ we have no more updated labels to commit
+        while threading.main_thread().is_alive() or self.cur_labels:
+            #
+            # initiate commits for locally modified labels
+            #
+            operations = {}
+            with self.label_lock:
+                if self.cur_labels:
+                    # list the instances with labels to change to get an up-do-date
+                    # labelFingerprint
+                    eq = [ f'(name = "{node_id}")' for node_id in self.cur_labels.keys() ]
+                    filter = " OR ".join(eq)
+                    response = compute.instances().list(
+                        project=self.provider_config["project_id"],
+                        zone=self.provider_config["availability_zone"],
+                        filter=filter,
+                    ).execute()
+                    instances = response.get("items", [])
+                    instances = {i["name"]: i for i in instances}
+
+                    # initiate the setLabels operation on all instances
+                    for node_id, labels in self.cur_labels.items():
+                        operations[node_id] = compute.instances().setLabels(
+                            project=project_id,
+                            zone=availability_zone,
+                            instance=node_id,
+                            body={
+                                "labels": labels,
+                                "labelFingerprint": instances[node_id]["labelFingerprint"]
+                            }).execute()
+
+                        # remember what we asked to commit; after the commit is confirmed
+                        # we'll use this to verify no addt'l changes were made the meantime.
+                        self.pending_commit[node_id] = labels.copy()
+            #
+            # wait for the pending updates to finish
+            #
+            for node_id, operation in operations.items():
+                result = compute.zoneOperations().wait(
+                    project=project_id, operation=operation["name"],
+                    zone=availability_zone).execute()
+
+                if "error" in result:
+                    logger.error(f"_label_committer_thread: setLabel failed. Info={result}.")
+                    continue
+
+                if result["status"] == "DONE":
+                    committed_labels = self.pending_commit.pop(node_id)
+                    with self.label_lock:
+                        # We can delete cur_labels if no new labels have
+                        # been added since the commit
+                        if self.cur_labels[node_id] == committed_labels:
+                            del self.cur_labels[node_id]
+
+            # wait a bit before continuing
+            time.sleep(0.1)
+
     def non_terminated_nodes(self, tag_filters):
         with self.lock:
             if tag_filters:
@@ -87,6 +168,13 @@ class GCPNodeProvider(NodeProvider):
             ).execute()
 
             instances = response.get("items", [])
+            # update labels with any uncommitted changes
+            with self.label_lock:
+                for i in instances:
+                    name = i["name"]
+                    if name in self.cur_labels:
+                        i["labels"]  = self.cur_labels[name]
+
             # Note: All the operations use "name" as the unique instance id
             self.cached_nodes = {i["name"]: i for i in instances}
 
@@ -109,25 +197,17 @@ class GCPNodeProvider(NodeProvider):
             return labels
 
     def set_node_tags(self, node_id, tags):
+        logger.info(f"set_node_tags: node={node_id}, tags={tags}")
+        # note: these two locks _must_ be locked in _exactly_ this order,
+        # otherwise you'll deadlock with locking in non_terminated_nodes()
         with self.lock:
-            labels = tags
-            project_id = self.provider_config["project_id"]
-            availability_zone = self.provider_config["availability_zone"]
+            with self.label_lock:
+                node = self._get_cached_node(node_id)
+                newlabels = dict(node["labels"], **tags)
 
-            node = self._get_node(node_id)
-            operation = self.compute.instances().setLabels(
-                project=project_id,
-                zone=availability_zone,
-                instance=node_id,
-                body={
-                    "labels": dict(node["labels"], **labels),
-                    "labelFingerprint": node["labelFingerprint"]
-                }).execute()
-
-            result = wait_for_compute_zone_operation(
-                self.compute, project_id, operation, availability_zone)
-
-            return result
+                # update if the labels have changed
+                if newlabels != node["labels"]:
+                    node["labels"] = self.cur_labels[node_id] = newlabels
 
     def external_ip(self, node_id):
         with self.lock:
