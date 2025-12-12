@@ -1,0 +1,28 @@
+name: build-ray-linux-wheels
+
+on:
+  workflow_dispatch:  # Manually triggered from the Actions tab
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build manylinux2014 x86_64 wheels
+        run: |
+          docker run --rm \
+            -v "$PWD":/ray \
+            -w /ray \
+            quay.io/pypa/manylinux2014_x86_64 \
+            bash python/build-wheel-manylinux2014.sh
+
+      - name: Upload wheels as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ray-linux-wheels
+          path: .whl/*.whl
+
+
