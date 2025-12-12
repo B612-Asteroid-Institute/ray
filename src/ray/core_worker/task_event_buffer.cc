@@ -15,6 +15,7 @@
 #include "ray/core_worker/task_event_buffer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <utility>
@@ -746,6 +747,15 @@ void TaskEventBufferImpl::WriteExportData(
   }
 }
 
+namespace {
+
+// Maximum number of times to retry sending a given TaskEventData batch to GCS.
+// This is intentionally small so that we give GCS a best-effort chance to accept
+// the batch without risking unbounded retries.
+constexpr int kMaxGcsTaskEventSendRetries = 5;
+
+}  // namespace
+
 void TaskEventBufferImpl::SendTaskEventsToGCS(std::unique_ptr<rpc::TaskEventData> data) {
   gcs::TaskInfoAccessor *task_accessor = nullptr;
   {
@@ -755,23 +765,80 @@ void TaskEventBufferImpl::SendTaskEventsToGCS(std::unique_ptr<rpc::TaskEventData
     task_accessor = &gcs_client_->Tasks();
   }
 
-  gcs_grpc_in_progress_ = true;
-  auto num_task_attempts_to_send = data->events_by_task_size();
-  auto num_dropped_task_attempts_to_send = data->dropped_task_attempts_size();
-  auto num_bytes_to_send = data->ByteSizeLong();
+  // We keep a shared copy of the batch so that we can retry sending it a few
+  // times if the GCS RPC fails. Each attempt sends a fresh copy of the proto.
+  auto persistent_data = std::make_shared<rpc::TaskEventData>(*data);
+  auto num_task_attempts_to_send = persistent_data->events_by_task_size();
+  auto num_dropped_task_attempts_to_send = persistent_data->dropped_task_attempts_size();
+  auto num_bytes_to_send = persistent_data->ByteSizeLong();
 
-  auto on_complete = [this,
-                      num_task_attempts_to_send,
-                      num_dropped_task_attempts_to_send,
-                      num_bytes_to_send](const Status &status) {
+  // Track how many attempts we've made for this batch.
+  auto attempts = std::make_shared<int>(0);
+
+  gcs_grpc_in_progress_ = true;
+
+  using Callback = std::function<void(const Status &)>;
+  auto callback = std::make_shared<Callback>();
+
+  *callback = [this,
+               task_accessor,
+               persistent_data,
+               attempts,
+               callback,
+               num_task_attempts_to_send,
+               num_dropped_task_attempts_to_send,
+               num_bytes_to_send](const Status &status) mutable {
     if (!status.ok()) {
-      RAY_LOG(WARNING) << "Failed to push task events of  " << num_task_attempts_to_send
-                       << " tasks attempts, and report "
+      (*attempts)++;
+      RAY_LOG(WARNING) << "Failed to push task events of " << num_task_attempts_to_send
+                       << " task attempts, and report "
                        << num_dropped_task_attempts_to_send
                        << " task attempts lost on worker to GCS."
-                       << "[status=" << status << "]";
+                       << " [status=" << status
+                       << ", attempt=" << *attempts << "/"
+                       << kMaxGcsTaskEventSendRetries << "]";
 
       this->stats_counter_.Increment(TaskEventBufferCounter::kTotalNumFailedToReport);
+
+      if (*attempts < kMaxGcsTaskEventSendRetries) {
+        // Exponential backoff with deterministic jitter to avoid thundering herd
+        // on the GCS when many workers retry at once.
+        int attempt_index = std::max(1, *attempts);
+        // Base delay grows as 100ms, 200ms, 400ms, 800ms, 1600ms, capped.
+        int64_t base_delay_ms =
+            100LL * (1LL << std::min(attempt_index - 1, 4));
+        int64_t max_jitter_ms = base_delay_ms / 2;
+        // Derive a simple deterministic "jitter" from batch characteristics so
+        // that different batches spread out their retries without an RNG.
+        int64_t seed =
+            static_cast<int64_t>(num_task_attempts_to_send) * 10007LL +
+            static_cast<int64_t>(num_bytes_to_send);
+        int64_t jitter_raw = (seed ^ (static_cast<int64_t>(*attempts) * 9973LL));
+        int64_t jitter_ms =
+            max_jitter_ms > 0 ? (std::abs(jitter_raw) % (max_jitter_ms + 1))
+                              : 0;
+        int64_t delay_ms = base_delay_ms + jitter_ms;
+
+        auto timer = std::make_shared<boost::asio::steady_timer>(io_service_);
+        timer->expires_after(std::chrono::milliseconds(delay_ms));
+        timer->async_wait(
+            [this,
+             task_accessor,
+             persistent_data,
+             callback,
+             timer](const boost::system::error_code &ec) mutable {
+              if (ec) {
+                // Timer was cancelled; do not retry.
+                return;
+              }
+              auto retry_data =
+                  std::make_unique<rpc::TaskEventData>(*persistent_data);
+              task_accessor->AsyncAddTaskEventData(std::move(retry_data),
+                                                   *callback);
+            });
+        return;
+      }
+      // Exhausted retries; give up on this batch.
     } else {
       this->stats_counter_.Increment(kTotalNumTaskAttemptsReported,
                                      num_task_attempts_to_send);
@@ -781,7 +848,10 @@ void TaskEventBufferImpl::SendTaskEventsToGCS(std::unique_ptr<rpc::TaskEventData
     }
     gcs_grpc_in_progress_ = false;
   };
-  task_accessor->AsyncAddTaskEventData(std::move(data), on_complete);
+
+  // First attempt.
+  auto first_data = std::make_unique<rpc::TaskEventData>(*persistent_data);
+  task_accessor->AsyncAddTaskEventData(std::move(first_data), *callback);
 }
 
 void TaskEventBufferImpl::SendRayEventsToAggregator(
