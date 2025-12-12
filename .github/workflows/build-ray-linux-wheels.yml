@@ -13,7 +13,11 @@ jobs:
 
       - name: Build manylinux2014 x86_64 wheels
         run: |
+          HOST_UID="$(id -u)"
+          HOST_GID="$(id -g)"
           docker run --rm \
+            -e HOST_UID="$HOST_UID" \
+            -e HOST_GID="$HOST_GID" \
             -v "$PWD":/ray \
             -w /ray \
             quay.io/pypa/manylinux2014_x86_64 \
