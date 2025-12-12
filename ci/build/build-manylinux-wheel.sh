@@ -2,7 +2,13 @@
 set -exuo pipefail
 
 PYTHON="$1"
-TRAVIS_COMMIT="${TRAVIS_COMMIT:-$BUILDKITE_COMMIT}"
+
+# Determine the commit SHA to embed in ray.__commit__.
+# Prefer TRAVIS_COMMIT, then BUILDKITE_COMMIT, and finally fall back to git.
+TRAVIS_COMMIT="${TRAVIS_COMMIT:-}"
+if [[ -z "$TRAVIS_COMMIT" && -n "${BUILDKITE_COMMIT:-}" ]]; then
+  TRAVIS_COMMIT="$BUILDKITE_COMMIT"
+fi
 
 export RAY_BUILD_ENV="manylinux_py${PYTHON}"
 
@@ -13,8 +19,9 @@ cd python
 if [[ -n "$TRAVIS_COMMIT" ]]; then
   sed -i.bak "s/{{RAY_COMMIT_SHA}}/$TRAVIS_COMMIT/g" ray/_version.py && rm ray/_version.py.bak
 else
-  echo "TRAVIS_COMMIT variable not set - required to populated ray.__commit__."
-  exit 1
+  echo "TRAVIS_COMMIT/BUILDKITE_COMMIT not set, getting current commit from git."
+  TRAVIS_COMMIT="$(git rev-parse HEAD)"
+  sed -i.bak "s/{{RAY_COMMIT_SHA}}/$TRAVIS_COMMIT/g" ray/_version.py && rm ray/_version.py.bak
 fi
 
 # When building the wheel, we always set RAY_INSTALL_JAVA=0 because we
