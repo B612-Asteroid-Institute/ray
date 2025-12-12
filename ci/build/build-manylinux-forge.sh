@@ -85,4 +85,4 @@ sudo ln -sf /usr/local/bin/python3.9 /usr/local/bin/python3
   if [[ "${BUILDKITE_BAZEL_CACHE_URL:-}" != "" ]]; then
     echo "build:ci --remote_cache=${BUILDKITE_BAZEL_CACHE_URL:-}"
   fi
-} > "$HOME"/.bazelrc
+} >> "$HOME"/.bazelrc
