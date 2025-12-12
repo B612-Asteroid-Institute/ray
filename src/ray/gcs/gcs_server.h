@@ -232,6 +232,11 @@ class GcsServer {
 
   void TryGlobalGC();
 
+  /// Request a cluster scheduling pass in GCS. This coalesces multiple triggers
+  /// into a single call to `cluster_lease_manager_->ScheduleAndGrantLeases()`
+  /// on the default io_context.
+  void RequestClusterScheduling();
+
   /// GCS server metrics
   const ray::gcs::GcsServerMetrics &metrics_;
   IOContextProvider<GcsServerIOContextPolicy> io_context_provider_;
@@ -315,6 +320,8 @@ class GcsServer {
   std::atomic<bool> is_started_;
   std::atomic<bool> is_stopped_;
   int task_pending_schedule_detected_ = 0;
+  /// Whether there is a pending request to run the cluster lease scheduler.
+  bool cluster_schedule_pending_ = false;
   /// Throttler for global gc
   std::unique_ptr<Throttler> global_gc_throttler_;
   /// Client to call a metrics agent gRPC server.

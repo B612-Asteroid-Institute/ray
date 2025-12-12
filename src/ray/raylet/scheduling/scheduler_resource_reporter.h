@@ -64,6 +64,11 @@ class SchedulerResourceReporter {
 
   const absl::flat_hash_map<SchedulingClass, absl::flat_hash_map<WorkerID, int64_t>>
       &backlog_tracker_;
+
+  /// Optional pointer back to the local lease manager, used only for recording
+  /// metrics. This is nullptr when running inside GCS with a noop local lease
+  /// manager.
+  const LocalLeaseManagerInterface *local_lease_manager_ = nullptr;
 };
 
 }  // namespace raylet

@@ -358,6 +358,16 @@ int main(int argc, char *argv[]) {
       ray::raylet::GetInternalNumSpilledTasksGaugeMetric();
   ray::stats::Gauge internal_num_infeasible_scheduling_classes_gauge =
       ray::raylet::GetInternalNumInfeasibleSchedulingClassesGaugeMetric();
+  ray::stats::Sum cluster_scheduler_runs_sum =
+      ray::raylet::GetClusterSchedulerRunsMetric();
+  ray::stats::Sum cluster_scheduler_triggers_sum =
+      ray::raylet::GetClusterSchedulerTriggersMetric();
+  ray::stats::Sum cluster_scheduler_budget_exhausted_sum =
+      ray::raylet::GetClusterSchedulerBudgetExhaustedMetric();
+  ray::stats::Histogram cluster_scheduler_run_duration_ms_histogram =
+      ray::raylet::GetClusterSchedulerRunDurationMsMetric();
+  ray::stats::Sum scheduler_shapes_skipped_total_sum =
+      ray::raylet::GetSchedulerShapesSkippedTotalMetric();
   ray::stats::Sum num_workers_started_sum = ray::raylet::GetNumWorkersStartedMetric();
   ray::stats::Sum num_cached_workers_skipped_job_mismatch_sum =
       ray::raylet::GetNumCachedWorkersSkippedJobMismatchMetric();
@@ -375,7 +385,12 @@ int main(int argc, char *argv[]) {
       scheduler_unscheduleable_tasks_gauge,
       scheduler_failed_worker_startup_total_gauge,
       internal_num_spilled_tasks_gauge,
-      internal_num_infeasible_scheduling_classes_gauge};
+      internal_num_infeasible_scheduling_classes_gauge,
+      cluster_scheduler_runs_sum,
+      cluster_scheduler_triggers_sum,
+      cluster_scheduler_budget_exhausted_sum,
+      cluster_scheduler_run_duration_ms_histogram,
+      scheduler_shapes_skipped_total_sum};
   ray::raylet::WorkerPoolMetrics worker_pool_metrics = {
       num_workers_started_sum,
       num_cached_workers_skipped_job_mismatch_sum,

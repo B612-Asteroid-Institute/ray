@@ -531,7 +531,9 @@ void GcsServer::InitGcsActorManager(
       /*normal_task_resources_changed_callback=*/
       [this](const NodeID &node_id, const rpc::ResourcesData &resources) {
         gcs_resource_manager_->UpdateNodeNormalTaskResources(node_id, resources);
-      });
+      },
+      /*request_cluster_schedule=*/
+      [this]() { RequestClusterScheduling(); });
   gcs_actor_manager_ = std::make_shared<GcsActorManager>(
       std::move(scheduler),
       gcs_table_storage_.get(),
@@ -855,7 +857,7 @@ void GcsServer::InstallEventListeners() {
           RAY_CHECK(channel != nullptr);
           gcs_healthcheck_manager_->AddNode(node_id, channel);
         }
-        cluster_lease_manager_->ScheduleAndGrantLeases();
+        RequestClusterScheduling();
       },
       io_context_provider_.GetDefaultIOContext());
   gcs_node_manager_->AddNodeRemovedListener(
@@ -914,7 +916,7 @@ void GcsServer::InstallEventListeners() {
             // Because resources have been changed, we need to try to schedule the
             // pending placement groups and actors.
             gcs_placement_group_manager_->SchedulePendingPlacementGroups();
-            cluster_lease_manager_->ScheduleAndGrantLeases();
+            RequestClusterScheduling();
           },
           "GcsServer.SchedulePendingActors");
     });
@@ -925,7 +927,7 @@ void GcsServer::InstallEventListeners() {
             // Because some placement group resources have been committed or deleted, we
             // need to try to schedule the pending placement groups and actors.
             gcs_placement_group_manager_->SchedulePendingPlacementGroups();
-            cluster_lease_manager_->ScheduleAndGrantLeases();
+            RequestClusterScheduling();
           },
           "GcsServer.SchedulePendingPGActors");
     });
@@ -996,6 +998,22 @@ void GcsServer::TryGlobalGC() {
 
     ray_syncer_->BroadcastMessage(std::move(msg));
   }
+}
+
+void GcsServer::RequestClusterScheduling() {
+  if (!cluster_lease_manager_) {
+    return;
+  }
+  if (cluster_schedule_pending_) {
+    return;
+  }
+  cluster_schedule_pending_ = true;
+  io_context_provider_.GetDefaultIOContext().post(
+      [this] {
+        cluster_schedule_pending_ = false;
+        cluster_lease_manager_->ScheduleAndGrantLeases();
+      },
+      "GcsServer.ScheduleClusterLeases");
 }
 
 }  // namespace gcs

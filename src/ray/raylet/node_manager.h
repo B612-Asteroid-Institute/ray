@@ -691,6 +691,11 @@ class NodeManager : public rpc::NodeManagerServiceHandler,
   /// before detecing an EOF on the socket.
   void CheckForUnexpectedWorkerDisconnects();
 
+  /// Request a cluster scheduling pass. This sets a pending flag that will be
+  /// picked up by the periodic scheduler runner, and records a trigger metric
+  /// the first time it is set until the next run.
+  void RequestClusterScheduling();
+
   /// Push an error to the driver if this node is full of actors and so we are
   /// unable to schedule new tasks or actors at all.
   void WarnResourceDeadlock();
@@ -805,6 +810,10 @@ class NodeManager : public rpc::NodeManagerServiceHandler,
   /// Incremented each time we encounter a potential resource deadlock condition.
   /// This is reset to zero when the condition is cleared.
   int resource_deadlock_warned_ = 0;
+  /// Whether there is a pending request to run the cluster lease scheduling loop.
+  /// This is used to coalesce many scheduling triggers into a single pass that
+  /// runs periodically on the io_service.
+  bool cluster_schedule_pending_ = false;
   /// Whether we have recorded any metrics yet.
   bool recorded_metrics_ = false;
   /// Initial node manager configuration.

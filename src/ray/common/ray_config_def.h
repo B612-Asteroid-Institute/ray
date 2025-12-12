@@ -172,6 +172,13 @@ RAY_CONFIG(int64_t, worker_cap_initial_backoff_delay_ms, 1000)
 /// until it hits a maximum delay.
 RAY_CONFIG(int64_t, worker_cap_max_backoff_delay_ms, 1000 * 10)
 
+/// Maximum number of pending leases that the cluster scheduler will attempt to
+/// schedule in a single pass of `ScheduleAndGrantLeases`. This bounds the
+/// amount of work done per scheduling trigger so that the raylet event loop is
+/// not monopolized when there are many thousands of pending tasks.
+/// If set to 0 or a negative value, no limit is applied.
+RAY_CONFIG(int64_t, scheduler_max_pending_leases_per_schedule, 0)
+
 /// The fraction of resource utilization on a node after which the scheduler starts
 /// to prefer spreading tasks to other nodes. This balances between locality and
 /// even balancing of load. Low values (min 0.0) encourage more load spreading.

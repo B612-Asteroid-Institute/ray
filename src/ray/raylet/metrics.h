@@ -26,6 +26,17 @@ struct SchedulerMetrics {
   ray::observability::MetricInterface &scheduler_failed_worker_startup_total;
   ray::observability::MetricInterface &internal_num_spilled_tasks;
   ray::observability::MetricInterface &internal_num_infeasible_scheduling_classes;
+  /// Number of times the cluster lease scheduling loop actually ran.
+  ray::observability::MetricInterface &cluster_scheduler_runs;
+  /// Number of times scheduling was requested (triggers), coalesced into runs.
+  ray::observability::MetricInterface &cluster_scheduler_triggers;
+  /// Number of times a scheduling pass hit the per-run lease budget.
+  ray::observability::MetricInterface &cluster_scheduler_budget_exhausted;
+  /// Duration of a single scheduling pass in milliseconds.
+  ray::observability::MetricInterface &cluster_scheduler_run_duration_ms;
+  /// Number of resource shapes (scheduling classes) skipped from
+  /// SchedulerResourceReporter due to max_resource_shapes_per_load_report_.
+  ray::observability::MetricInterface &scheduler_shapes_skipped_total;
 };
 
 struct WorkerPoolMetrics {
@@ -104,6 +115,47 @@ inline ray::stats::Gauge GetInternalNumInfeasibleSchedulingClassesGaugeMetric() 
       /*name=*/"internal_num_infeasible_scheduling_classes",
       /*description=*/"The number of unique scheduling classes that are infeasible.",
       /*unit=*/"tasks"};
+}
+
+inline ray::stats::Sum GetClusterSchedulerRunsMetric() {
+  return ray::stats::Sum{ /*name=*/"cluster_scheduler_runs_total",
+                          /*description=*/
+                          "Number of times the cluster lease scheduler loop ran.",
+                          /*unit=*/"runs"};
+}
+
+inline ray::stats::Sum GetClusterSchedulerTriggersMetric() {
+  return ray::stats::Sum{ /*name=*/"cluster_scheduler_triggers_total",
+                          /*description=*/
+                          "Number of times cluster scheduling was requested "
+                          "(triggers), before coalescing into actual runs.",
+                          /*unit=*/"triggers"};
+}
+
+inline ray::stats::Sum GetClusterSchedulerBudgetExhaustedMetric() {
+  return ray::stats::Sum{
+      /*name=*/"cluster_scheduler_budget_exhausted_total",
+      /*description=*/
+      "Number of scheduling passes that hit the per-run pending lease budget.",
+      /*unit=*/"runs"};
+}
+
+inline ray::stats::Histogram GetClusterSchedulerRunDurationMsMetric() {
+  return ray::stats::Histogram{
+      /*name=*/"cluster_scheduler_run_duration_ms",
+      /*description=*/"Wall-clock duration of a single cluster scheduler run.",
+      /*unit=*/"ms",
+      /*boundaries=*/{1, 10, 50, 100, 250, 500, 1000, 5000, 10000}};
+}
+
+inline ray::stats::Sum GetSchedulerShapesSkippedTotalMetric() {
+  return ray::stats::Sum{
+      /*name=*/"scheduler_shapes_skipped_total",
+      /*description=*/
+      "Total number of resource shapes (scheduling classes) skipped by "
+      "SchedulerResourceReporter because max_resource_shapes_per_load_report_ "
+      "was exceeded.",
+      /*unit=*/"shapes"};
 }
 
 inline ray::stats::Gauge GetSpillManagerObjectsGaugeMetric() {

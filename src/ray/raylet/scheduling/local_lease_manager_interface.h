@@ -221,6 +221,11 @@ class NoopLocalLeaseManager : public LocalLeaseManagerInterface {
       /*scheduler_failed_worker_startup_total=*/noop_gauge_,
       /*internal_num_spilled_tasks=*/noop_gauge_,
       /*internal_num_infeasible_scheduling_classes=*/noop_gauge_,
+      /*cluster_scheduler_runs=*/noop_gauge_,
+      /*cluster_scheduler_triggers=*/noop_gauge_,
+      /*cluster_scheduler_budget_exhausted=*/noop_gauge_,
+      /*cluster_scheduler_run_duration_ms=*/noop_gauge_,
+      /*scheduler_shapes_skipped_total=*/noop_gauge_,
   };
 };
 }  // namespace raylet

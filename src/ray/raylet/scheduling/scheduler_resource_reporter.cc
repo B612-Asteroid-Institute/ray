@@ -40,7 +40,8 @@ SchedulerResourceReporter::SchedulerResourceReporter(
       leases_to_schedule_(leases_to_schedule),
       leases_to_grant_(local_lease_manager.GetLeasesToGrant()),
       infeasible_leases_(infeasible_leases),
-      backlog_tracker_(local_lease_manager.GetBackLogTracker()) {}
+      backlog_tracker_(local_lease_manager.GetBackLogTracker()),
+      local_lease_manager_(&local_lease_manager) {}
 
 int64_t SchedulerResourceReporter::TotalBacklogSize(
     SchedulingClass scheduling_class) const {
@@ -166,6 +167,10 @@ void SchedulerResourceReporter::FillResourceUsage(rpc::ResourcesData &data) cons
     RAY_LOG(WARNING) << "There are more than " << max_resource_shapes_per_load_report_
                      << " scheduling classes. Some resource loads may not be reported to "
                         "the autoscaler.";
+    if (local_lease_manager_ != nullptr) {
+      local_lease_manager_->GetSchedulerMetrics().scheduler_shapes_skipped_total.Record(
+          skipped_requests);
+    }
   }
 }
 

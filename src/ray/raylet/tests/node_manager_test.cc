@@ -392,7 +392,12 @@ class NodeManagerTest : public ::testing::Test {
         fake_scheduler_unscheduleable_tasks_gauge_,
         fake_scheduler_failed_worker_startup_total_gauge_,
         fake_internal_num_spilled_tasks_gauge_,
-        fake_internal_num_infeasible_scheduling_classes_gauge_};
+        fake_internal_num_infeasible_scheduling_classes_gauge_,
+        fake_cluster_scheduler_runs_gauge_,
+        fake_cluster_scheduler_triggers_gauge_,
+        fake_cluster_scheduler_budget_exhausted_gauge_,
+        fake_cluster_scheduler_run_duration_ms_gauge_,
+        fake_scheduler_shapes_skipped_total_gauge_};
 
     local_lease_manager_ = std::make_unique<LocalLeaseManager>(
         raylet_node_id_,
@@ -485,6 +490,11 @@ class NodeManagerTest : public ::testing::Test {
   ray::observability::FakeGauge fake_internal_num_spilled_tasks_gauge_;
   ray::observability::FakeGauge fake_internal_num_infeasible_scheduling_classes_gauge_;
   ray::observability::FakeGauge fake_memory_manager_worker_eviction_total_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_runs_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_triggers_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_budget_exhausted_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_run_duration_ms_gauge_;
+  ray::observability::FakeGauge fake_scheduler_shapes_skipped_total_gauge_;
 };
 
 TEST_F(NodeManagerTest, TestRegisterGcsAndCheckSelfAlive) {
@@ -574,6 +584,12 @@ TEST_F(NodeManagerTest, TestDetachedWorkerIsKilledByFailedWorker) {
         promise.set_value(status);
       });
 
+  // In production, scheduling is driven by a coalesced trigger running on the
+  // node manager's event loop. In this unit test, manually run a scheduling
+  // pass to mimic that behavior so that the local lease manager pulls a
+  // worker from the pool.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
+
   // Prepare a mock worker and check if it is not killed later.
   const auto worker = std::make_shared<MockWorker>(WorkerID::FromRandom(), 10);
   // Complete the RequestWorkerLease rpc with the mock worker.
@@ -645,6 +661,10 @@ TEST_F(NodeManagerTest, TestDetachedWorkerIsKilledByFailedNode) {
       [&](Status status, std::function<void()> success, std::function<void()> failure) {
         promise.set_value(status);
       });
+
+  // Mimic the coalesced scheduler trigger in production by explicitly running
+  // a scheduling pass in the test.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
 
   // Prepare a mock worker and check if it is not killed later.
   const auto worker = std::make_shared<MockWorker>(WorkerID::FromRandom(), 10);
@@ -978,6 +998,9 @@ TEST_F(NodeManagerTest, TestHandleRequestWorkerLeaseGrantedLeaseIdempotent) {
       [](Status s, std::function<void()> success, std::function<void()> failure) {
         ASSERT_TRUE(s.ok());
       });
+  // Manually drive a scheduling pass so that the queued lease is scheduled
+  // and the local lease manager requests a worker.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
   pop_worker_callback(worker, PopWorkerStatus::OK, "");
   ASSERT_EQ(leased_workers_.size(), 1);
   ASSERT_EQ(leased_workers_[lease_id]->GetGrantedLeaseId(), lease_id);
@@ -1039,7 +1062,9 @@ TEST_F(NodeManagerTest, TestHandleRequestWorkerLeaseScheduledLeaseIdempotent) {
       });
   ASSERT_EQ(leased_workers_.size(), 0);
   auto scheduling_class = lease_spec.GetSchedulingClass();
-  ASSERT_TRUE(local_lease_manager_->IsLeaseQueued(scheduling_class, lease_id));
+  // The lease is now queued in the *cluster* lease manager instead of the
+  // local lease manager.
+  ASSERT_TRUE(cluster_lease_manager_->IsLeaseQueued(scheduling_class, lease_id));
 
   // Test HandleRequestWorkerLease idempotency for leases that aren't yet granted
   node_manager_->HandleRequestWorkerLease(
@@ -1051,10 +1076,13 @@ TEST_F(NodeManagerTest, TestHandleRequestWorkerLeaseScheduledLeaseIdempotent) {
         ASSERT_TRUE(s.ok());
       });
   ASSERT_EQ(leased_workers_.size(), 0);
-  ASSERT_TRUE(local_lease_manager_->IsLeaseQueued(scheduling_class, lease_id));
+  ASSERT_TRUE(cluster_lease_manager_->IsLeaseQueued(scheduling_class, lease_id));
 
   // Make the dependency available and notify the local lease manager that leases are
   // unblocked so the lease can be granted
+  // First, run a scheduling pass so that the lease's argument dependencies are
+  // registered with the lease dependency manager.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
   auto ready_lease_ids = lease_dependency_manager_->HandleObjectLocal(object_dep);
   ASSERT_EQ(ready_lease_ids.size(), 1);
   ASSERT_EQ(ready_lease_ids[0], lease_id);
@@ -1062,6 +1090,7 @@ TEST_F(NodeManagerTest, TestHandleRequestWorkerLeaseScheduledLeaseIdempotent) {
 
   // Grant the lease, both callbacks should be triggered
   ASSERT_TRUE(pop_worker_callback);
+  cluster_lease_manager_->ScheduleAndGrantLeases();
   pop_worker_callback(worker, PopWorkerStatus::OK, "");
   ASSERT_EQ(leased_workers_.size(), 1);
   ASSERT_EQ(leased_workers_[lease_id]->GetGrantedLeaseId(), lease_id);
@@ -1093,6 +1122,9 @@ TEST_F(NodeManagerTest, TestHandleRequestWorkerLeaseInfeasibleIdempotent) {
       [](Status s, std::function<void()> success, std::function<void()> failure) {
         ASSERT_TRUE(s.ok());
       });
+  // Drive the scheduling pass so that the infeasible lease is processed and
+  // the reply is populated.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
   ASSERT_EQ(leased_workers_.size(), 0);
   ASSERT_EQ(reply1.canceled(), true);
   ASSERT_EQ(reply1.failure_type(),
@@ -1104,6 +1136,9 @@ TEST_F(NodeManagerTest, TestHandleRequestWorkerLeaseInfeasibleIdempotent) {
       [](Status s, std::function<void()> success, std::function<void()> failure) {
         ASSERT_TRUE(s.ok());
       });
+  // Drive scheduling for the second request as well so that it is also
+  // processed as infeasible.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
   ASSERT_EQ(leased_workers_.size(), 0);
   ASSERT_EQ(reply1.canceled(), reply2.canceled());
   ASSERT_EQ(reply1.failure_type(), reply2.failure_type());
@@ -1133,7 +1168,8 @@ TEST_F(NodeManagerTest, TestReschedulingLeasesDuringHandleDrainRaylet) {
       [](Status s, std::function<void()> success, std::function<void()> failure) {
         ASSERT_FALSE(true) << "This callback should not be called.";
       });
-  ASSERT_EQ(GetPendingLeaseWorkerCount(*local_lease_manager_), 1);
+  // The lease is now queued in the cluster lease manager's pending queue.
+  ASSERT_EQ(cluster_lease_manager_->GetPendingQueueSize(), 1);
   rpc::DrainRayletRequest drain_raylet_request;
   rpc::DrainRayletReply drain_raylet_reply;
   drain_raylet_request.set_reason(
@@ -1144,7 +1180,11 @@ TEST_F(NodeManagerTest, TestReschedulingLeasesDuringHandleDrainRaylet) {
       [](Status s, std::function<void()> success, std::function<void()> failure) {
         ASSERT_TRUE(s.ok());
       });
-  ASSERT_EQ(GetPendingLeaseWorkerCount(*local_lease_manager_), 0);
+  // After draining is accepted the leases are moved back to the cluster lease
+  // manager and scheduling is requested asynchronously. Drive a scheduling
+  // pass here to process the rescheduling.
+  cluster_lease_manager_->ScheduleAndGrantLeases();
+  ASSERT_EQ(cluster_lease_manager_->GetPendingQueueSize(), 0);
   // The lease is infeasible now since the local node is draining.
   ASSERT_EQ(cluster_lease_manager_->GetInfeasibleQueueSize(), 1);
 }
@@ -1165,7 +1205,7 @@ TEST_F(NodeManagerTest, RetryHandleCancelWorkerLeaseWhenHasLeaseRequest) {
       [](Status s, std::function<void()> success, std::function<void()> failure) {
         ASSERT_TRUE(s.ok());
       });
-  ASSERT_EQ(GetPendingLeaseWorkerCount(*local_lease_manager_), 1);
+  ASSERT_EQ(cluster_lease_manager_->GetPendingQueueSize(), 1);
   rpc::CancelWorkerLeaseRequest cancel_worker_lease_request;
   cancel_worker_lease_request.set_lease_id(lease_id.Binary());
   rpc::CancelWorkerLeaseReply cancel_worker_lease_reply1;

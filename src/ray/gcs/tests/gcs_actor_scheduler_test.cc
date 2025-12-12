@@ -45,6 +45,11 @@ class MockedGcsActorScheduler : public gcs::GcsActorScheduler {
  public:
   using gcs::GcsActorScheduler::GcsActorScheduler;
 
+  // Expose a helper to invoke the protected ScheduleByGcs from tests.
+  void PublicScheduleByGcs(std::shared_ptr<gcs::GcsActor> actor) {
+    ScheduleByGcs(std::move(actor));
+  }
+
  protected:
   void RetryLeasingWorkerFromNode(std::shared_ptr<gcs::GcsActor> actor,
                                   std::shared_ptr<const rpc::GcsNodeInfo> node) override {
@@ -155,7 +160,8 @@ class GcsActorSchedulerTest : public ::testing::Test {
         [gcs_resource_manager](const NodeID &node_id,
                                const rpc::ResourcesData &resources) {
           gcs_resource_manager->UpdateNodeNormalTaskResources(node_id, resources);
-        });
+        },
+        /*request_cluster_schedule=*/nullptr);
   }
 
   void TearDown() override { io_context_->Stop(); }
@@ -228,6 +234,38 @@ class GcsActorSchedulerTest : public ::testing::Test {
   ray::observability::FakeHistogram fake_scheduler_placement_time_ms_histogram_;
   NodeID local_node_id_;
 };
+
+// Verify that when a request_cluster_schedule callback is provided, GCS
+// scheduling uses it instead of calling the cluster lease manager directly.
+TEST_F(GcsActorSchedulerTest, TestRequestClusterScheduleCallbackCalled) {
+  bool request_called = false;
+  MockedGcsActorScheduler scheduler(
+      io_context_->GetIoService(),
+      *gcs_actor_table_,
+      *gcs_node_manager_,
+      *cluster_lease_manager_,
+      /*schedule_failure_handler=*/
+      [this](std::shared_ptr<gcs::GcsActor> actor,
+             const rpc::RequestWorkerLeaseReply::SchedulingFailureType failure_type,
+             const std::string &scheduling_failure_message) {
+        failure_actors_.emplace_back(std::move(actor));
+      },
+      /*schedule_success_handler=*/
+      [this](std::shared_ptr<gcs::GcsActor> actor, const rpc::PushTaskReply &reply) {
+        success_actors_.emplace_back(std::move(actor));
+      },
+      *raylet_client_pool_,
+      *worker_client_pool_,
+      fake_scheduler_placement_time_ms_histogram_,
+      /*normal_task_resources_changed_callback=*/nullptr,
+      /*request_cluster_schedule=*/
+      [&] { request_called = true; });
+
+  auto actor = NewGcsActor({{"CPU", 1}});
+  scheduler.PublicScheduleByGcs(actor);
+
+  ASSERT_TRUE(request_called);
+}
 
 /**************************************************************/
 /************* TESTS WITH RAYLET SCHEDULING BELOW *************/

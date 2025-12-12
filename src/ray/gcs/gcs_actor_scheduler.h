@@ -132,7 +132,8 @@ class GcsActorScheduler : public GcsActorSchedulerInterface {
       rpc::CoreWorkerClientPool &worker_client_pool,
       ray::observability::MetricInterface &scheduler_placement_time_ms_histogram,
       std::function<void(const NodeID &, const rpc::ResourcesData &)>
-          normal_task_resources_changed_callback = nullptr);
+          normal_task_resources_changed_callback = nullptr,
+       std::function<void()> request_cluster_schedule = nullptr);
 
   ~GcsActorScheduler() override = default;
 
@@ -400,6 +401,9 @@ class GcsActorScheduler : public GcsActorSchedulerInterface {
   /// Normal task resources changed callback.
   std::function<void(const NodeID &, const rpc::ResourcesData &)>
       normal_task_resources_changed_callback_;
+
+  /// Optional callback to request a coalesced cluster scheduling pass in GCS.
+  std::function<void()> request_cluster_schedule_;
 
   /// Select a node where the actor is forwarded (for queueing and scheduling).
   ///

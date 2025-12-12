@@ -534,12 +534,22 @@ class ClusterLeaseManagerTest : public ::testing::Test {
   ray::observability::FakeGauge fake_scheduler_failed_worker_startup_total_gauge_;
   ray::observability::FakeGauge fake_internal_num_spilled_tasks_gauge_;
   ray::observability::FakeGauge fake_internal_num_infeasible_scheduling_classes_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_runs_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_triggers_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_budget_exhausted_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_run_duration_ms_gauge_;
+  ray::observability::FakeGauge fake_scheduler_shapes_skipped_total_gauge_;
   ray::raylet::SchedulerMetrics scheduler_metrics_{
       fake_scheduler_tasks_gauge_,
       fake_scheduler_unscheduleable_tasks_gauge_,
       fake_scheduler_failed_worker_startup_total_gauge_,
       fake_internal_num_spilled_tasks_gauge_,
       fake_internal_num_infeasible_scheduling_classes_gauge_,
+      fake_cluster_scheduler_runs_gauge_,
+      fake_cluster_scheduler_triggers_gauge_,
+      fake_cluster_scheduler_budget_exhausted_gauge_,
+      fake_cluster_scheduler_run_duration_ms_gauge_,
+      fake_scheduler_shapes_skipped_total_gauge_,
   };
   MockLeaseDependencyManager lease_dependency_manager_;
   std::unique_ptr<LocalLeaseManager> local_lease_manager_;

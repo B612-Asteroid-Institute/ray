@@ -58,6 +58,18 @@ class ClusterLeaseManager : public ClusterLeaseManagerInterface {
         return static_cast<int64_t>(absl::GetCurrentTimeNanos() / 1e6);
       });
 
+  /// Queue lease without immediately running the global scheduling loop.
+  ///
+  /// \param lease: The incoming lease to be queued.
+  /// \param grant_or_reject: True if we we should either grant or reject the request
+  ///                         but no spillback.
+  /// \param is_selected_based_on_locality : should schedule on local node if possible.
+  /// \param reply_callbacks: The reply callbacks of the lease request.
+  void QueueLease(RayLease lease,
+                  bool grant_or_reject,
+                  bool is_selected_based_on_locality,
+                  std::vector<internal::ReplyCallback> reply_callbacks) override;
+
   /// Queue lease and schedule. This happens when processing the worker lease request.
   ///
   /// \param lease: The incoming lease to be queued and scheduled.
@@ -149,9 +161,9 @@ class ClusterLeaseManager : public ClusterLeaseManagerInterface {
   ClusterResourceScheduler &GetClusterResourceScheduler() const;
 
   /// Get the count of leases in `infeasible_leases_`.
-  size_t GetInfeasibleQueueSize() const;
+  size_t GetInfeasibleQueueSize() const override;
   /// Get the count of leases in `leases_to_schedule_`.
-  size_t GetPendingQueueSize() const;
+  size_t GetPendingQueueSize() const override;
 
   /// Populate the info of pending and infeasible actors. This function
   /// is only called by gcs node.

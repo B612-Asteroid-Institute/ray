@@ -324,11 +324,6 @@ class LocalLeaseManagerTest : public ::testing::Test {
             id_.Binary(), num_cpus, *gcs_client_, fake_resource_usage_gauge_)),
         object_manager_(),
         fake_task_by_state_counter_(),
-        scheduler_metrics_{fake_scheduler_tasks_gauge_,
-                           fake_scheduler_unscheduleable_tasks_gauge_,
-                           fake_scheduler_failed_worker_startup_total_gauge_,
-                           fake_internal_num_spilled_tasks_gauge_,
-                           fake_internal_num_infeasible_scheduling_classes_gauge_},
         lease_dependency_manager_(object_manager_, fake_task_by_state_counter_),
         local_lease_manager_(std::make_shared<LocalLeaseManager>(
             id_,
@@ -396,7 +391,22 @@ class LocalLeaseManagerTest : public ::testing::Test {
   ray::observability::FakeGauge fake_scheduler_failed_worker_startup_total_gauge_;
   ray::observability::FakeGauge fake_internal_num_spilled_tasks_gauge_;
   ray::observability::FakeGauge fake_internal_num_infeasible_scheduling_classes_gauge_;
-  ray::raylet::SchedulerMetrics scheduler_metrics_;
+  ray::observability::FakeGauge fake_cluster_scheduler_runs_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_triggers_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_budget_exhausted_gauge_;
+  ray::observability::FakeGauge fake_cluster_scheduler_run_duration_ms_gauge_;
+  ray::observability::FakeGauge fake_scheduler_shapes_skipped_total_gauge_;
+  ray::raylet::SchedulerMetrics scheduler_metrics_{
+      fake_scheduler_tasks_gauge_,
+      fake_scheduler_unscheduleable_tasks_gauge_,
+      fake_scheduler_failed_worker_startup_total_gauge_,
+      fake_internal_num_spilled_tasks_gauge_,
+      fake_internal_num_infeasible_scheduling_classes_gauge_,
+      fake_cluster_scheduler_runs_gauge_,
+      fake_cluster_scheduler_triggers_gauge_,
+      fake_cluster_scheduler_budget_exhausted_gauge_,
+      fake_cluster_scheduler_run_duration_ms_gauge_,
+      fake_scheduler_shapes_skipped_total_gauge_};
   LeaseDependencyManager lease_dependency_manager_;
   std::shared_ptr<LocalLeaseManager> local_lease_manager_;
 };

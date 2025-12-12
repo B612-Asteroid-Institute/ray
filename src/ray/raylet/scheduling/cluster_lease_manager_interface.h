@@ -27,6 +27,25 @@ class ClusterLeaseManagerInterface {
  public:
   virtual ~ClusterLeaseManagerInterface() = default;
 
+  /// Queue lease without immediately running the global scheduling loop.
+  ///
+  /// This is intended for callers that want to coalesce or budget scheduling
+  /// work (for example, via a periodic timer). For most callers that do not
+  /// need this level of control, prefer `QueueAndScheduleLease`, which will
+  /// enqueue and then synchronously run a scheduling pass.
+  ///
+  /// \param lease: The incoming lease to be queued.
+  /// \param grant_or_reject: True if we we should either grant or reject the
+  ///                         request but no spillback.
+  /// \param is_selected_based_on_locality : should schedule on local node if
+  ///                                        possible.
+  /// \param reply_callbacks: The reply callbacks of the lease request.
+  virtual void QueueLease(
+      RayLease lease,
+      bool grant_or_reject,
+      bool is_selected_based_on_locality,
+      std::vector<internal::ReplyCallback> reply_callbacks) = 0;
+
   // Schedule and dispatch leases.
   virtual void ScheduleAndGrantLeases() = 0;
 
@@ -111,6 +130,12 @@ class ClusterLeaseManagerInterface {
   /// acquisition.
   virtual const RayLease *AnyPendingLeasesForResourceAcquisition(
       int *num_pending_actor_creation, int *num_pending_leases) const = 0;
+
+  /// Get the count of leases in the infeasible queue.
+  virtual size_t GetInfeasibleQueueSize() const = 0;
+
+  /// Get the count of leases in the pending-to-schedule queue.
+  virtual size_t GetPendingQueueSize() const = 0;
 
   /// The helper to dump the debug state of the cluster lease manater.
   virtual std::string DebugStr() const = 0;

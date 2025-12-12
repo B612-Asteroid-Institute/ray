@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 
+#include "ray/common/ray_config.h"
 #include "ray/util/logging.h"
 #include "ray/util/string_utils.h"
 
@@ -44,7 +45,7 @@ ClusterLeaseManager::ClusterLeaseManager(
       internal_stats_(*this, local_lease_manager_),
       get_time_ms_(std::move(get_time_ms)) {}
 
-void ClusterLeaseManager::QueueAndScheduleLease(
+void ClusterLeaseManager::QueueLease(
     RayLease lease,
     bool grant_or_reject,
     bool is_selected_based_on_locality,
@@ -64,6 +65,17 @@ void ClusterLeaseManager::QueueAndScheduleLease(
   } else {
     leases_to_schedule_[scheduling_class].emplace_back(std::move(work));
   }
+}
+
+void ClusterLeaseManager::QueueAndScheduleLease(
+    RayLease lease,
+    bool grant_or_reject,
+    bool is_selected_based_on_locality,
+    std::vector<internal::ReplyCallback> reply_callbacks) {
+  QueueLease(std::move(lease),
+             grant_or_reject,
+             is_selected_based_on_locality,
+             std::move(reply_callbacks));
   ScheduleAndGrantLeases();
 }
 
@@ -197,6 +209,9 @@ void ClusterLeaseManager::ScheduleAndGrantLeases() {
   // Always try to schedule infeasible tasks in case they are now feasible.
   TryScheduleInfeasibleLease();
   std::deque<std::shared_ptr<internal::Work>> works_to_cancel;
+  const int64_t max_leases_per_schedule =
+      RayConfig::instance().scheduler_max_pending_leases_per_schedule();
+  int64_t leases_processed = 0;
   for (auto shapes_it = leases_to_schedule_.begin();
        shapes_it != leases_to_schedule_.end();) {
     auto &work_queue = shapes_it->second;
@@ -218,6 +233,10 @@ void ClusterLeaseManager::ScheduleAndGrantLeases() {
           /*exclude_local_node*/ false,
           /*requires_object_store_memory*/ false,
           &is_infeasible);
+
+      if (max_leases_per_schedule > 0) {
+        leases_processed += 1;
+      }
 
       // There is no node that has available resources to run the request.
       // Move on to the next shape.
@@ -254,12 +273,21 @@ void ClusterLeaseManager::ScheduleAndGrantLeases() {
           continue;
         }
 
+        if (max_leases_per_schedule > 0 &&
+            leases_processed >= max_leases_per_schedule) {
+          goto scheduling_done;
+        }
         break;
       }
 
       NodeID node_id = NodeID::FromBinary(scheduling_node_id.Binary());
       ScheduleOnNode(node_id, work);
       work_it = work_queue.erase(work_it);
+
+      if (max_leases_per_schedule > 0 &&
+          leases_processed >= max_leases_per_schedule) {
+        goto scheduling_done;
+      }
     }
 
     if (is_infeasible) {
@@ -280,6 +308,8 @@ void ClusterLeaseManager::ScheduleAndGrantLeases() {
       shapes_it++;
     }
   }
+
+scheduling_done:
 
   for (const auto &work : works_to_cancel) {
     // All works in `works_to_cancel` are scheduled by gcs. So `ReplyCancelled`

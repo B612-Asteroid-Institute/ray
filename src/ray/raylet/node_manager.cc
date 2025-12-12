@@ -243,7 +243,34 @@ NodeManager::NodeManager(
   RAY_LOG(INFO).WithField(kLogKeyNodeID, self_node_id_) << "Initializing NodeManager";
 
   periodical_runner_->RunFnPeriodically(
-      [this]() { cluster_lease_manager_.ScheduleAndGrantLeases(); },
+      [this]() {
+        if (!cluster_schedule_pending_) {
+          return;
+        }
+        cluster_schedule_pending_ = false;
+
+        // Record scheduler run metrics around a single scheduling pass.
+        const auto &scheduler_metrics = local_lease_manager_.GetSchedulerMetrics();
+        const int64_t max_leases_per_schedule =
+            RayConfig::instance().scheduler_max_pending_leases_per_schedule();
+        const size_t pre_pending = cluster_lease_manager_.GetPendingQueueSize();
+        uint64_t start_ms = current_time_ms();
+        cluster_lease_manager_.ScheduleAndGrantLeases();
+        uint64_t duration_ms = current_time_ms() - start_ms;
+
+        scheduler_metrics.cluster_scheduler_runs.Record(1);
+        scheduler_metrics.cluster_scheduler_run_duration_ms.Record(
+            static_cast<double>(duration_ms));
+
+        if (max_leases_per_schedule > 0 && pre_pending > 0) {
+          const size_t post_pending = cluster_lease_manager_.GetPendingQueueSize();
+          if (pre_pending > post_pending &&
+              pre_pending - post_pending >=
+                  static_cast<size_t>(max_leases_per_schedule)) {
+            scheduler_metrics.cluster_scheduler_budget_exhausted.Record(1);
+          }
+        }
+      },
       RayConfig::instance().worker_cap_initial_backoff_delay_ms(),
       "NodeManager.ScheduleAndGrantLeases");
 
@@ -536,9 +563,8 @@ void NodeManager::HandleJobStarted(const JobID &job_id, const JobTableData &job_
       << " driver address: " << job_data.driver_address().ip_address();
   worker_pool_.HandleJobStarted(job_id, job_data.config());
   // Leases of this job may already arrived but failed to pop a worker because the job
-  // config is not local yet. So we trigger granting again here to try to
-  // reschedule these leases.
-  cluster_lease_manager_.ScheduleAndGrantLeases();
+  // config is not local yet. Request a scheduling pass so we can reschedule them.
+  RequestClusterScheduling();
 }
 
 void NodeManager::HandleJobFinished(const JobID &job_id, const JobTableData &job_data) {
@@ -599,6 +625,13 @@ void NodeManager::CheckForUnexpectedWorkerDisconnects() {
       RAY_LOG(DEBUG).WithField(all_workers[i]->WorkerId()) << msg;
       DestroyWorker(all_workers[i], rpc::WorkerExitType::SYSTEM_ERROR, msg);
     }
+  }
+}
+
+void NodeManager::RequestClusterScheduling() {
+  if (!cluster_schedule_pending_) {
+    cluster_schedule_pending_ = true;
+    local_lease_manager_.GetSchedulerMetrics().cluster_scheduler_triggers.Record(1);
   }
 }
 
@@ -870,8 +903,9 @@ void NodeManager::WarnResourceDeadlock() {
     RAY_LOG_EVERY_MS(WARNING, 10 * 1000) << cluster_lease_manager_.DebugStr();
   }
   // Try scheduling leases. Without this, if there's no more leases coming in,
-  // deadlocked leases are never be scheduled.
-  cluster_lease_manager_.ScheduleAndGrantLeases();
+  // deadlocked leases may never be scheduled. We just request a scheduling pass,
+  // which will be coalesced with other triggers.
+  RequestClusterScheduling();
 }
 
 void NodeManager::NodeAdded(const rpc::GcsNodeAddressAndLiveness &node_info) {
@@ -1253,7 +1287,7 @@ Status NodeManager::RegisterForNewWorker(
     // If the worker failed to register to Raylet, trigger lease granting here to
     // allow new worker processes to be started (if capped by
     // maximum_startup_concurrency).
-    cluster_lease_manager_.ScheduleAndGrantLeases();
+    RequestClusterScheduling();
   }
   return status;
 }
@@ -1373,7 +1407,7 @@ void NodeManager::HandleWorkerAvailable(const std::shared_ptr<WorkerInterface> &
     worker_pool_.PushWorker(worker);
   }
 
-  cluster_lease_manager_.ScheduleAndGrantLeases();
+  RequestClusterScheduling();
 }
 
 namespace {
@@ -1534,7 +1568,7 @@ void NodeManager::DisconnectClient(const std::shared_ptr<ClientConnection> &clie
     local_lease_manager_.ReleaseWorkerResources(worker);
 
     // Since some resources may have been released, we can try to grant more leases.
-    cluster_lease_manager_.ScheduleAndGrantLeases();
+    RequestClusterScheduling();
   } else if (is_driver) {
     // The client is a driver.
     const auto job_id = worker->GetAssignedJobId();
@@ -1871,11 +1905,12 @@ void NodeManager::HandleRequestWorkerLease(rpc::RequestWorkerLeaseRequest reques
   const auto &lease_spec = lease.GetLeaseSpecification();
   worker_pool_.PrestartWorkers(lease_spec, request.backlog_size());
 
-  cluster_lease_manager_.QueueAndScheduleLease(
+  cluster_lease_manager_.QueueLease(
       std::move(lease),
       request.grant_or_reject(),
       request.is_selected_based_on_locality(),
       {internal::ReplyCallback(std::move(send_reply_callback_wrapper), reply)});
+  RequestClusterScheduling();
 }
 
 void NodeManager::HandlePrestartWorkers(rpc::PrestartWorkersRequest request,
@@ -1942,7 +1977,7 @@ void NodeManager::HandleCommitBundleResources(
   placement_group_resource_manager_.CommitBundles(bundle_specs);
   send_reply_callback(Status::OK(), nullptr, nullptr);
 
-  cluster_lease_manager_.ScheduleAndGrantLeases();
+  RequestClusterScheduling();
 }
 
 void NodeManager::HandleCancelResourceReserve(
@@ -1994,7 +2029,7 @@ void NodeManager::HandleCancelResourceReserve(
   }
 
   RAY_CHECK_OK(placement_group_resource_manager_.ReturnBundle(bundle_spec));
-  cluster_lease_manager_.ScheduleAndGrantLeases();
+  RequestClusterScheduling();
   send_reply_callback(Status::OK(), nullptr, nullptr);
 }
 
@@ -2085,7 +2120,7 @@ void NodeManager::HandleResizeLocalResourceInstances(
                   << debug_string(updated_total_map);
     RAY_LOG(INFO) << "Available resources: " << debug_string(updated_available_map);
     // Trigger scheduling to account for the new resources
-    cluster_lease_manager_.ScheduleAndGrantLeases();
+    RequestClusterScheduling();
   }
 
   // Populate the reply with the current resource state
@@ -2188,11 +2223,12 @@ void NodeManager::HandleDrainRaylet(rpc::DrainRayletRequest request,
     auto cancelled_works = local_lease_manager_.CancelLeasesWithoutReply(
         [&](const std::shared_ptr<internal::Work> &work) { return true; });
     for (const auto &work : cancelled_works) {
-      cluster_lease_manager_.QueueAndScheduleLease(work->lease_,
-                                                   work->grant_or_reject_,
-                                                   work->is_selected_based_on_locality_,
-                                                   work->reply_callbacks_);
+      cluster_lease_manager_.QueueLease(work->lease_,
+                                        work->grant_or_reject_,
+                                        work->is_selected_based_on_locality_,
+                                        work->reply_callbacks_);
     }
+    RequestClusterScheduling();
   }
 }
 
@@ -2316,7 +2352,7 @@ void NodeManager::HandleNotifyWorkerBlocked(
   }
 
   local_lease_manager_.ReleaseCpuResourcesFromBlockedWorker(worker);
-  cluster_lease_manager_.ScheduleAndGrantLeases();
+  RequestClusterScheduling();
 }
 
 void NodeManager::HandleNotifyWorkerUnblocked(
@@ -2327,7 +2363,7 @@ void NodeManager::HandleNotifyWorkerUnblocked(
 
   if (worker->IsBlocked()) {
     local_lease_manager_.ReturnCpuResourcesToUnblockedWorker(worker);
-    cluster_lease_manager_.ScheduleAndGrantLeases();
+    RequestClusterScheduling();
   }
 }
 
@@ -3003,7 +3039,7 @@ void NodeManager::ConsumeSyncMessage(
     const bool capacity_updated = ResourceCreateUpdated(node_id, resources);
     const bool usage_update = UpdateResourceUsage(node_id, resource_view_sync_message);
     if (capacity_updated || usage_update) {
-      cluster_lease_manager_.ScheduleAndGrantLeases();
+      RequestClusterScheduling();
     }
   } else if (message->message_type() == syncer::MessageType::COMMANDS) {
     syncer::CommandsSyncMessage commands_sync_message;
