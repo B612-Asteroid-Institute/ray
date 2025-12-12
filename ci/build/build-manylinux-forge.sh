@@ -78,7 +78,9 @@ sudo ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
 sudo ln -sf /usr/local/bin/python3.9 /usr/local/bin/python3
 
 {
-  echo "build --config=ci"
+  # When building wheels outside of Ray's CI, don't force --config=ci by default.
+  # We still enable --announce_rc for better logging, and optionally configure
+  # the CI-specific remote cache if BUCKDKITE_BAZEL_CACHE_URL is set.
   echo "build --announce_rc"
   if [[ "${BUILDKITE_BAZEL_CACHE_URL:-}" != "" ]]; then
     echo "build:ci --remote_cache=${BUILDKITE_BAZEL_CACHE_URL:-}"
