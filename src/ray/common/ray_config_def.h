@@ -503,6 +503,13 @@ RAY_CONFIG(uint64_t,
            task_events_max_num_export_status_events_buffer_on_worker,
            1000 * 1000)
 
+/// Initial backoff (in ms) for retrying delivery of task events from the core
+/// worker to GCS when the AsyncAddTaskEventData RPC fails. Each subsequent
+/// retry doubles the base delay up to a small cap. This helps avoid hammering
+/// GCS under transient failures while still making a best-effort attempt to
+/// deliver task lifecycle events.
+RAY_CONFIG(int64_t, task_events_retry_initial_backoff_ms, 100)
+
 /// Max number of task events to be send in a single message to GCS. This caps both
 /// the message size, and also the processing work on GCS.
 RAY_CONFIG(uint64_t, task_events_send_batch_size, 10 * 1000)

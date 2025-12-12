@@ -804,9 +804,14 @@ void TaskEventBufferImpl::SendTaskEventsToGCS(std::unique_ptr<rpc::TaskEventData
         // Exponential backoff with deterministic jitter to avoid thundering herd
         // on the GCS when many workers retry at once.
         int attempt_index = std::max(1, *attempts);
-        // Base delay grows as 100ms, 200ms, 400ms, 800ms, 1600ms, capped.
+        // Base delay grows as B, 2B, 4B, 8B, 16B (capped), where B is configured
+        // via RAY_task_events_retry_initial_backoff_ms.
+        int64_t base_unit_ms = RayConfig::instance().task_events_retry_initial_backoff_ms();
+        if (base_unit_ms <= 0) {
+          base_unit_ms = 1;
+        }
         int64_t base_delay_ms =
-            100LL * (1LL << std::min(attempt_index - 1, 4));
+            base_unit_ms * (1LL << std::min(attempt_index - 1, 4));
         int64_t max_jitter_ms = base_delay_ms / 2;
         // Derive a simple deterministic "jitter" from batch characteristics so
         // that different batches spread out their retries without an RNG.
@@ -822,11 +827,8 @@ void TaskEventBufferImpl::SendTaskEventsToGCS(std::unique_ptr<rpc::TaskEventData
         auto timer = std::make_shared<boost::asio::steady_timer>(io_service_);
         timer->expires_after(std::chrono::milliseconds(delay_ms));
         timer->async_wait(
-            [this,
-             task_accessor,
-             persistent_data,
-             callback,
-             timer](const boost::system::error_code &ec) mutable {
+            [task_accessor, persistent_data, callback, timer](
+                const boost::system::error_code &ec) mutable {
               if (ec) {
                 // Timer was cancelled; do not retry.
                 return;
