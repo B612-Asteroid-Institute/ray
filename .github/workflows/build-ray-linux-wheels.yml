@@ -15,12 +15,9 @@ jobs:
         run: |
           HOST_UID="$(id -u)"
           HOST_GID="$(id -g)"
-          # Set HOME to /ray so that inside the container the non-root build user
-          # can write to $HOME (used by build-manylinux-forge.sh).
           docker run --rm \
             -e HOST_UID="$HOST_UID" \
             -e HOST_GID="$HOST_GID" \
-            -e HOME="/ray" \
             -v "$PWD":/ray \
             -w /ray \
             quay.io/pypa/manylinux2014_x86_64 \

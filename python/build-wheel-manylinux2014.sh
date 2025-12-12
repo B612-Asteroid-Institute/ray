@@ -18,7 +18,10 @@ if [ "$EUID" -eq 0 ]; then
   # Give sudo access
   echo "builduser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-  exec sudo -E -u builduser HOME="$HOME" bash "$0" "$@"
+  # Run the rest of this script as the non-root build user, with HOME set to /ray
+  # so that all writable state (e.g. $HOME/bin, .bazelrc) lives in the mounted
+  # repository directory instead of /root.
+  exec sudo -E -u builduser HOME="/ray" bash "$0" "$@"
 
   exit 0
 
